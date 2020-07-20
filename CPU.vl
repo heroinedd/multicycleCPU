@@ -1,0 +1,451 @@
+//首先将多周期CPU分散互连结构中的各个部件写出来，然后在模块CPU里对他们进行实例化，将他们互连成完整的CPU
+`timescale 1ns/1ns
+module PC(clk,en,D,Q);
+    input clk,en;
+    input [31:0] D;
+    reg [31:0] pc;
+    output [31:0] Q;
+    
+    assign Q=pc;
+    
+    initial
+        pc=0;
+        
+    always
+    @(posedge clk)
+        if(en==1)
+            pc=D;    
+endmodule
+
+module memory(clk,addr,R_data,W_data,W,R);
+    input [31:0] addr,W_data;
+    input clk,W,R;
+    output reg [31:0] R_data;
+    reg [7:0] mem[0:1023]; //存储器按字节编址
+    
+    initial  //在存储器中放入指令和数据，对CPU进行测试
+        begin
+            mem[3]=8'b10001100; //LW R0,Imm16(R1) Imm16=0
+            mem[2]=8'b00100000;
+            mem[1]=8'b00000000;
+            mem[0]=8'b00000000;
+            
+            mem[7]=8'b00000000; //ADD R1,R1,R0
+            mem[6]=8'b00000001;
+            mem[5]=8'b00001000;
+            mem[4]=8'b00100000;
+            
+            mem[11]=8'b00010000; //BEQ R2,R3,Addr16
+            mem[10]=8'b01000011;
+            mem[9]=8'b00000000;
+            mem[8]=8'b00000000;
+            
+            mem[15]=8'b00010000; //BEQ R2,R4,Addr16(R2!=R4)
+            mem[14]=8'b01000100;
+            mem[13]=8'b00000000;
+            mem[12]=8'b00000000;
+            
+            mem[19]=8'b10101100; //SW R1,Imm16(R5)
+            mem[18]=8'b10100001;
+            mem[17]=8'b00000000;
+            mem[16]=8'b00000000;
+           
+            mem[20]=1;
+            mem[21]=0;
+            mem[22]=0;
+            mem[23]=0;
+        end
+    
+    always
+    @(posedge clk)
+        if(W)
+            begin
+                mem[addr]=W_data[7:0];
+                mem[addr+1]=W_data[15:8];
+                mem[addr+2]=W_data[23:16];
+                mem[addr+3]=W_data[31:24];
+            end
+        
+    always
+    @(*)
+        if(R) R_data={mem[addr+3],mem[addr+2],mem[addr+1],mem[addr]}; 
+        
+    reg [31:0] out;
+    always
+    @(*)
+        out={mem[23],mem[22],mem[21],mem[20]};
+
+    initial
+        $monitor("time:%t",$time," mem[20]:%d",out);
+endmodule
+
+module IR(clk,IRWr,D,inst25_21,inst20_16,inst15_0,inst31_26);
+    input clk,IRWr;
+    input [31:0] D;
+    output [25:21] inst25_21;
+    output [20:16] inst20_16;
+    output [15:0] inst15_0;
+    output [31:26] inst31_26; //形成opcode
+    reg [31:0] ir;
+    
+    always
+    @(posedge clk)
+        if(IRWr)
+            ir=D;
+    
+    assign inst25_21=ir[25:21];
+    assign inst20_16=ir[20:16];
+    assign inst15_0=ir[15:0];
+    assign inst31_26=ir[31:26];    
+endmodule
+
+module MUX2_1(select,in0,in1,out);
+    input select;
+    input [31:0] in0,in1;
+    output reg [31:0] out;
+    
+    always
+    @(*)
+        case(select)
+            0: out=in0;
+            1: out=in1;
+        endcase    
+endmodule
+
+module MUX4_1(select,in0,in1,in2,in3,out);
+    input [1:0] select;
+    input [31:0] in0,in1,in2,in3;
+    output reg [31:0] out;
+    
+    always
+    @(*)
+        case(select)
+            0: out=in0;
+            1: out=in1;
+            2: out=in2;
+            3: out=in3;
+        endcase    
+endmodule
+
+module A_B_MDR_ALUout(clk,D,Q);
+    input [31:0] D;
+    input clk;
+    reg [31:0] register;
+    output [31:0] Q;
+    
+    always
+    @(posedge clk)
+        register=D;
+        
+    assign Q=register;    
+endmodule
+
+module RF(clk,R_Reg1,R_Reg2,W_Reg,W_data,R_data1,R_data2,RegWr);
+    input [4:0] R_Reg1,R_Reg2,W_Reg,W_data;
+    input clk,RegWr;
+    output [31:0] R_data1,R_data2;
+    reg [31:0] regs[0:31];
+    
+    assign R_data1=regs[R_Reg1];
+    assign R_data2=regs[R_Reg2];
+    
+    initial
+        begin
+            regs[1]=20;
+            regs[2]=2;
+            regs[3]=2;
+            regs[4]=3;
+            regs[5]=20;
+        end
+    
+    always
+    @(posedge clk)
+        if(RegWr)
+            regs[W_Reg]=W_data;
+
+    initial
+        $monitor("time:%t",$time," regs[0]:%d,regs[1]:%d",regs[0],regs[1]);
+endmodule
+
+module ALU(A,B,M,Z,C);
+    input [31:0] A,B;
+    input [2:0] M;  //ALUCtrl
+    output reg Z;
+    output reg [31:0] C;
+    
+    initial
+        C=0;
+    
+    always
+    @(M or A or B)
+        begin
+            case(M)
+                3'b100: C=A+B; //ADD判溢出
+                3'b101: C=A+B; //ADDU
+                3'b110: C=A-B; //SUB判溢出
+                3'b000: C=A&B; //AND
+                3'b001: C=A|B; //OR
+                3'b011: C=A<B?1:0;//SLT
+            endcase
+            if(C==0) Z=1;
+            else Z=0;
+        end
+endmodule
+
+module ALUcontrol(inst5_0,ALUOp,ALUCtrl);
+    input [5:0] inst5_0;
+    input [1:0] ALUOp;
+    output reg [2:0] ALUCtrl;
+    
+    initial
+        ALUCtrl=3'b100;
+    
+    always
+    @(inst5_0 or ALUOp)
+        begin
+            if(ALUOp==2'b00) ALUCtrl=3'b100;
+            if(ALUOp==2'b01) ALUCtrl=3'b110;
+            if(ALUOp==2'b10) 
+                case(inst5_0)
+                    6'b100000: ALUCtrl=3'b100;
+                    6'b100001: ALUCtrl=3'b101;
+                    6'b100010: ALUCtrl=3'b110;
+                    6'b100100: ALUCtrl=3'b000;
+                    6'b100101: ALUCtrl=3'b001;
+                    6'b101010: ALUCtrl=3'b011;
+                endcase
+        end    
+endmodule
+
+module SHL2_1(in,out);
+    input [31:0] in;
+    output reg [31:0] out;
+    always
+    @(in)
+        out=in<<2;    
+endmodule
+
+module SHL2_2(in,out);
+    input [25:0] in;
+    output reg [27:0] out;
+    always
+    @(in)
+        out=in<<2;    
+endmodule
+
+module SigExt(inst15_0,out);
+    input [15:0] inst15_0;
+    output reg [31:0] out;
+    
+    integer k;
+    always
+    @(inst15_0)
+        begin
+            for(k=0;k<16;k=k+1)
+                out[k]=inst15_0[k];
+            for(k=16;k<32;k=k+1)
+                out[k]=inst15_0[15];
+        end    
+endmodule
+
+module CU(clk,OP_Code,PCWr,PCWrCond,IorD,MemRd,MemWr,IRWr,MemtoReg,PCSrc,ALUOp,ALUSrcB,ALUSrcA,RegWr,RegDst); //生成各种控制信号
+    input clk;
+    input [5:0] OP_Code;
+    reg [3:0] NS,S; //NS是当前状态，S是下一状态
+    output reg PCWr,PCWrCond,IorD,MemRd,MemWr,IRWr,MemtoReg,ALUSrcA,RegWr,RegDst;
+    output reg [1:0] ALUSrcB,ALUOp,PCSrc;
+    
+    initial
+        #2 NS=0;
+    
+    always
+    @(NS)
+        begin
+            case(NS)
+                0: 
+                    begin
+                        MemRd=1;
+                        ALUSrcA=0;
+                        IorD=0;
+                        IRWr=1;
+                        ALUSrcB=2'b01;
+                        ALUOp=2'b00;
+                        PCWr=1;
+                        PCSrc=2'b00;
+                        #1 RegWr=0;
+                        MemWr=0;
+                        PCWrCond=0;
+                    end
+                1: 
+                    begin
+                        ALUSrcA=0;
+                        ALUSrcB=2'b11;
+                        ALUOp=2'b00;
+                        #1 MemRd=0;
+                        IRWr=0;
+                        PCWr=0;
+                    end
+                2: 
+                    begin
+                        ALUSrcA=1;
+                        ALUSrcB=2'b10;
+                        ALUOp=2'b00;
+                    end
+                3: 
+                    begin
+                        MemRd=1;
+                        IorD=1;
+                    end
+                4: 
+                    begin
+                        RegDst=0;
+                        RegWr=1;
+                        MemtoReg=1;
+                        #1 MemRd=0;
+                    end
+                5: 
+                    begin
+                        MemWr=1;
+                        IorD=1;
+                    end
+                6: 
+                    begin
+                        ALUSrcA=1;
+                        ALUSrcB=2'b00;
+                        ALUOp=2'b10;
+                    end
+                7: 
+                    begin
+                        RegDst=1;
+                        RegWr=1;
+                        MemtoReg=0;
+                    end
+                8: 
+                    begin
+                        ALUSrcA=1;
+                        ALUSrcB=2'b00;
+                        ALUOp=2'b01;
+                        PCWrCond=1;
+                        PCSrc=2'b01;
+                    end
+                9: 
+                    begin
+                        PCWr=1;
+                        PCSrc=2'b10;
+                    end
+            endcase
+        end
+        
+    always
+    @(posedge clk)
+        begin
+            case(NS)
+                0: S=1;
+                1: 
+                    case(OP_Code)
+                        6'b100011,       //'LW'
+                        6'b101011: S=2;  //'SW'
+                        6'b000000: S=6;  //'R-Type'
+                        6'b000100: S=8;  //'BEQ'
+                        6'b000010: S=9;  //'J'
+                    endcase
+                2: 
+                    case(OP_Code)
+                        6'b100011: S=3;  //'LW'
+                        6'b101011: S=5;  //'SW'
+                    endcase
+                3: S=4;
+                6: S=7;
+                4,
+                5,
+                7,
+                8,
+                9: S=0;  
+            endcase
+            #1 NS=S;
+        end
+endmodule
+
+module CPU;
+    reg clk;
+    wire PCWr,PCWrCond,IorD,MemRd,MemWr,IRWr,MemtoReg,ALUSrcA,RegWr,RegDst;
+    wire ALU_Z;
+    wire [1:0] ALUSrcB,ALUOp,PCSrc;
+    wire [2:0] ALUCtrl;
+    wire [31:0] PC_D,PC_Q,ALU_out,mem_addr,mem_R_data,MDR_Q,RF_W_data,RF_R_data1,RF_R_data2,A_Q,B_Q,ALU_A,ALU_B,ALU_C,SigExt_out,SigExt_out_SHL2,pinjie;
+    wire [27:0] SHL_out1;
+    wire [4:0] Rs,Rt,Rd,RF_W_Reg;
+    wire [5:0] OP_Code;
+    wire [15:0] imme;
+    wire [3:0] S,N;
+    reg PCen,sig1;
+    wire inst25_0={Rs,Rt,imme}; 
+    
+    always
+    @(ALU_Z or PCWrCond)
+        sig1=ALU_Z&PCWrCond;
+    
+    always
+    @(sig1 or PCWr)
+        PCen=sig1|PCWr;
+        
+    assign Rd=imme[15:11];
+    assign pinjie={PC_Q[31:28],SHL_out1};
+    
+    PC pc(clk,PCen,PC_D,PC_Q);
+    IR ir(clk,IRWr,mem_R_data,Rs,Rt,imme,OP_Code);
+    memory mem(clk,mem_addr,mem_R_data,B_Q,MemWr,MemRd);
+    RF rf(clk,Rs,Rt,RF_W_Reg,RF_W_data,RF_R_data1,RF_R_data2,RegWr);
+    ALU alu(ALU_A,ALU_B,ALUCtrl,ALU_Z,ALU_C);
+    SigExt sigext(imme,SigExt_out);
+    SHL2_2 shl2(inst25_0,SHL_out1);
+    SHL2_1 shl1(SigExt_out,SigExt_out_SHL2);
+    ALUcontrol alucontrol(imme[5:0],ALUOp,ALUCtrl);
+    CU cu(clk,OP_Code,PCWr,PCWrCond,IorD,MemRd,MemWr,IRWr,MemtoReg,PCSrc,ALUOp,ALUSrcB,ALUSrcA,RegWr,RegDst);
+    
+    MUX2_1 mux1(IorD,PC_Q,ALU_out,mem_addr);
+    MUX2_1 mux2(MemtoReg,ALU_out,MDR_Q,RF_W_data);    
+    MUX2_1 mux3(RegDst,Rt,Rd,RF_W_Reg);
+    MUX2_1 mux4(ALUSrcA,PC_Q,A_Q,ALU_A);
+    MUX4_1 mux5(ALUSrcB,B_Q,4,SigExt_out,SigExt_out_SHL2,ALU_B);
+    MUX4_1 mux6(PCSrc,ALU_C,ALU_out,pinjie,0,PC_D);
+    
+    A_B_MDR_ALUout MDR(clk,mem_R_data,MDR_Q);
+    A_B_MDR_ALUout A(clk,RF_R_data1,A_Q);
+    A_B_MDR_ALUout B(clk,RF_R_data2,B_Q);
+    A_B_MDR_ALUout ALUout(clk,ALU_C,ALU_out);
+    
+    integer k;
+    initial 
+        begin
+            clk=1;
+            for(k=0;k<100;k=k+1) #5 clk=~clk;
+        end
+        
+    initial
+        begin
+            $dumpfile("CPU.vcd");
+            $dumpvars(0,CPU);
+        end
+       
+endmodule
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
